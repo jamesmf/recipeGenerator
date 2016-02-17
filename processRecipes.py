@@ -30,4 +30,4 @@ with open("allrecipes.txt",'wb') as ar:
 
         
         if text.find("could not open recipe") <  0:
-            ar.write(text+"$\n")
+            ar.write(text+"$$$$\n")
