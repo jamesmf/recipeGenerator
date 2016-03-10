@@ -1,9 +1,9 @@
 from __future__ import print_function
-from keras.models import Sequential
-from keras.layers.embeddings import Embedding
-from keras.layers.core import Dense, Activation, Dropout, TimeDistributedDense,RepeatVector,Merge
-from keras.layers.recurrent import GRU,LSTM
-from keras.datasets.data_utils import get_file
+#from keras.models import Sequential
+#from keras.layers.embeddings import Embedding
+#from keras.layers.core import Dense, Activation, Dropout, TimeDistributedDense,RepeatVector,Merge
+#from keras.layers.recurrent import GRU,LSTM
+#from keras.datasets.data_utils import get_file
 import numpy as np
 import re
 import operator
@@ -64,53 +64,22 @@ def recipesToMatrix(vocab,word_indices,recipes):
         print(example)
         stop=raw_input("")
 
+    return out
 
-def recipesToWords(vocab,word_indices,recipes,recs):
-    Xword   = []
-    for recnumber, recipe in enumerate(recipes):
-        ind1        = recipe.find(recs[recnumber])
-        ind2        = recipe[ind1+len(recs[recnumber]):].find(" ")
-        recipe      = recipe[0:ind1+len(recs[recnumber])]
-        word_snips  = []
-        next_chars  = []
-        for i in range(0, len(recipe) - maxlen, step):
-            
-            word_snips.append(wordTokenize(recipe[: i + maxlen])[:-1])
-            next_chars.append(recipe[i + maxlen])
-
-        #iterate over snippets within one recipe
-        xword   = np.zeros((len(word_snips),maxlen))
-        for i, wordsnip in enumerate(word_snips):
-            #turn each snippet into a one-hot encoded array of examples x time x output
-            if len(wordsnip) >= maxlen:
-                diff        = 0
-                wordsnip    = wordsnip[-maxlen:]
-            else:
-                diff        = maxlen - len(wordsnip)
-
-            #for each timestep in the snippet
-            for t, word in enumerate(wordsnip):
-                tadjust         = t+diff
-                if word in vocab:
-                    xword[i,tadjust]= word_indices[word] 
-            
-        Xword.append(xword)
-    
-    XwordOut   = np.zeros((len(Xword[0])*batchSize,maxlen))
-    
-    ind     = 0
-    added   = 0
-    no      = 0
-    for i in range(0,len(Xword[0])):
-        for j in range(0,batchSize):
-            if i < len(Xword[j]):
-                XwordOut[ind,:] = Xword[j][i]
-                added+=1
-            else:
-                no+=1
-            ind+=1
-
-    return XwordOut 
+def recsToXY(recs):
+    X     = np.zeros((len(recs),maxlen))
+    y     = np.zeros((len(recs),len(vocab)+1))
+    ml     = np.max([r.shape[0] for r in recs])
+    toGuess=0
+    while toGuess == 0:
+        toGuess= np.floor(np.random.rand()*ml)
+    for n,rec in enumerate(recs):
+        tmpX     = rec[:toGuess]
+        tmpy     = np.zeros((len(vocab)+1))
+        tmpy[rec[toGuess] ] = 1
+        X[n,-tmpX.shape[0]:] = tmpX
+        y[n]     = tmpy
+    return X, y
 
 def loadThatModel(folder):
     with open(folder+".json",'rb') as f:
@@ -176,48 +145,34 @@ probStart= 0.25
 print(sorted(word_indices.values())[:10])
 
 
-wordModel = Sequential()
-wordModel.add(Embedding(vocSize+1, 512, input_length=maxlen,batch_input_shape=(batchSize,maxlen)))
-wordModel.add(LSTM(512, return_sequences=True,stateful=True))    
-wordModel.add(Dropout(.2))
-wordModel.add(LSTM(512, return_sequences=False,stateful=True))
-
-#wordModel.add(RepeatVector(maxlen))
-
-wordModel.add(Dense(len(vocab)))
-wordModel.add(Activation('softmax'))
-
-wordModel.compile(loss='categorical_crossentropy', optimizer='rmsprop')
+#wordModel = Sequential()
+#wordModel.add(Embedding(vocSize+1, 512,mask_zero=True, input_length=maxlen,input_shape=(maxlen,)))
+#wordModel.add(LSTM(512, return_sequences=True,stateful=True))    
+#wordModel.add(Dropout(.2))
+#wordModel.add(LSTM(512, return_sequences=False,stateful=True))
+#
+##wordModel.add(RepeatVector(maxlen))
+#
+#wordModel.add(Dense(len(vocab)+1))
+#wordModel.add(Activation('softmax'))
+#
+#wordModel.compile(loss='categorical_crossentropy', optimizer='rmsprop')
 
 #create a batch of recipes
 ind         = 0
 epochLoss   = []
 recMatrix   = recipesToMatrix(vocab,word_indices,recipes)
 while True: 
-    if ind + batchSize > len(recipes):
-        print()
-        print("epoch complete:", np.mean(epochLoss,axis=0))
-        epochLoss   = []
-        ind         = 0
-        np.random.shuffle(recipes)
-    callbacks   = []
-    recs        = recipes[ind:ind+batchSize]
-    recs        = sorted(recs,key=lambda x: len(x),reverse=True)
-    recSamples  = sampleFromRecipes(recs)
-    #Xchar,y     = recipesToChars(chars,char_indices,recSamples)
-    Xword       = recipesToWords(vocab,word_indices,recs,recSamples)
-    for i in range(0,Xchar.shape[0]/batchSize):
-        xcharbat    = Xchar[i*batchSize:(i+1)*batchSize,:,:]
-        xwordbat    = Xword[i*batchSize:(i+1)*batchSize,:]
-        ybat        = y[i*batchSize:(i+1)*batchSize,:] 
-        loss    = model.train_on_batch([xcharbat,xwordbat], ybat)
-        if not np.isnan(loss[0]):
-            callbacks.append(loss[0])
-
-    print(ind,"/",len(recipes)," - loss:",np.mean(callbacks,axis=0),end="\r")
-    sys.stdout.flush()
-    epochLoss.append(np.mean(callbacks,axis=0))
-    model.reset_states()
+    
+    recs     = recMatrix[ind:ind+batchSize]
+    X,y     = recsToXY(recs)    
+    print(X.shape)
+    print(y.shape)
+    stop=raw_input("")
+    print(X)
+    stop=raw_input("")
+    print(y)
+    
     ind     = ind+batchSize
     
 
