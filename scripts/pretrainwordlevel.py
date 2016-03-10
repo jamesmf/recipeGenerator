@@ -7,9 +7,9 @@ from __future__ import print_function
 import numpy as np
 import re
 import operator
-from collections import Counter
+#from collections import Counter
 import sys
-from keras.models import model_from_json
+#from keras.models import model_from_json
 
 """
 script to train a word-level LSTM or GRU to predict the next word based on 
@@ -113,7 +113,7 @@ batchSize   = 16
 #read in the text file
 path    = "../allrecipes.txt"
 text    = open(path).read().lower()
-recipes = [r+"$$$$" for r in text.split("$$$$")]
+recipes = [r+"$$$$" for r in text.split("$$$$") if len(r) > 100]
 np.random.shuffle(recipes)
 print("number of recipes:",len(recipes))
 
@@ -126,6 +126,13 @@ indices_char = dict((i, c) for i, c in enumerate(chars))
 #define the word vocabulary
 word_thr= 2
 toks    = wordTokenize(text)
+
+ls     = [len(wordTokenize(rec)) for rec in recipes]
+am     = np.argmin(ls)
+print(recipes[am])
+print(np.max(ls))
+print(np.min(ls))
+
 counts  = Counter(toks)
 vocab   = [x[0] for x in counts.most_common() if x[1] > word_thr]
 vocSize = len(vocab)
