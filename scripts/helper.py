@@ -30,8 +30,9 @@ class ModelHelper:
         toks                = self.wordTokenizer(corpus)
         counts              = Counter(toks)
         self.vocab          = [x[0] for x in counts.most_common() if x[1] > tf_threshold]
+        self.vocab.insert(0,"oov")
         self.vocSize        = len(self.vocab)
-        self.word_indices   = dict((c, i+1) for i, c in enumerate(self.vocab))
+        self.word_indices   = dict((c, i) for i, c in enumerate(self.vocab))
         
         
     def add(self,name,value):
@@ -128,13 +129,18 @@ def wordTokenize(sent):
     r       = [x for x in re.split(patt,sent) if x != '']
     return r[:-1]
     
-def getNumberIngredients(recipes):
-    out     = []
-    for recipe in recipes:
-        ingSec  = recipe[recipe.find("ingredients:"):recipe.find("directions:")]
-        count   = ingSec.count("\n")
-        count   -=3
-        out.append(count)
+def getNumberIngredients(recipes,one=False):
+    if one:
+        recipe = recipes
+        ingSec = recipe[recipe.find("ingredients:"):recipe.find("directions:")]
+        return ingSec.count("\n")
+    else:
+        out     = []
+        for recipe in recipes:
+            ingSec  = recipe[recipe.find("ingredients:"):recipe.find("directions:")]
+            count   = ingSec.count("\n")
+            count   -=3
+            out.append(count)
     return out
     
 def shuffleIngredients(recipes):
@@ -226,7 +232,27 @@ def getCharAndWordNoState(recipeBatch,conVecBatch,maxlen,maxWord,char_indices,wo
 
     return Xcharacter, Xword, Xcontext, ys
     
+
+def excludeRecipe(recipe):
+    if recipe.find("filling:") > -1:
+        return True
+    if recipe.find("icing:") > -1:
+        return True
+    if getNumberIngredients(recipe,one=True) <= 8:
+        return True
+    if recipe.find("mix all ingredients") > -1:
+        return True
+    return False
     
+
+def sameShuffle(a,b):
+    l = len(a)
+    inds = range(0,l)
+    np.random.shuffle(inds)
+    a2 = [a[n] for n in inds]
+    b2 = [b[n] for n in inds]
+    return a2,b2
+
     
 def getTrainOfThought(text):
     pass    
