@@ -45,47 +45,51 @@ step = 3
 numComps = 25
 vecSize  = numComps+1
 
-mh.add("maxlen",maxlen)
-mh.add("maxWord",maxWord)
-mh.add("vecSize",vecSize)
-
-ingNums = helper.getNumberIngredients(recipes)
-names = helper.getNames(recipes)
-#pca = PCA(n_components=numComps)
-lda = LatentDirichletAllocation(n_topics=numComps,n_jobs=1)
-#svd = TruncatedSVD(n_components=numComps)
-cv = CountVectorizer(min_df=mh.tf_threshold)
-
-print("countVectorizing recipes")
-cvRecs   = cv.fit_transform(recipes)
-print("recipes countVectorized")
-#vecs  = pca.fit_transform(cvRecs)
-print("Generating recipe-level stats (SVD or LDA)")
-vecs  = lda.fit_transform(cvRecs)
-#vecs   = svd.fit_transform(cvRecs)
-print("Done")
-
-contextVecs = [np.append(vecs[i],ingNums[i]) for i in range(0,len(recipes))]
-contextVecs = np.array(contextVecs)
-contextVecs = contextVecs - np.mean(contextVecs,axis=0)
-contextVecs = contextVecs / (np.std(contextVecs,axis=0)+0.00000001)
-
-
-#these will be useful for sampling randomly as a seed
-mh.add("contextVectors",contextVecs)
-mh.add("recipeNames",names)
-mh.add("recipes",recipes)
-
-mh.save("../models/recipeRNN3noState")
+if len(sys.argv) <= 1:
+    
+    mh.add("maxlen",maxlen)
+    mh.add("maxWord",maxWord)
+    mh.add("vecSize",vecSize)
+    
+    ingNums = helper.getNumberIngredients(recipes)
+    names = helper.getNames(recipes)
+    #pca = PCA(n_components=numComps)
+    lda = LatentDirichletAllocation(n_topics=numComps,n_jobs=1)
+    #svd = TruncatedSVD(n_components=numComps)
+    cv = CountVectorizer(min_df=mh.tf_threshold)
+    
+    print("countVectorizing recipes")
+    cvRecs   = cv.fit_transform(recipes)
+    print("recipes countVectorized")
+    #vecs  = pca.fit_transform(cvRecs)
+    print("Generating recipe-level stats (SVD or LDA)")
+    vecs  = lda.fit_transform(cvRecs)
+    #vecs   = svd.fit_transform(cvRecs)
+    print("Done")
+    
+    contextVecs = [np.append(vecs[i],ingNums[i]) for i in range(0,len(recipes))]
+    contextVecs = np.array(contextVecs)
+    contextVecs = contextVecs - np.mean(contextVecs,axis=0)
+    contextVecs = contextVecs / (np.std(contextVecs,axis=0)+0.00000001)
+    
+    
+    #these will be useful for sampling randomly as a seed
+    mh.add("contextVectors",contextVecs)
+    mh.add("recipeNames",names)
+    mh.add("recipes",recipes)
+    
+    mh.save("../models/recipeRNN3noState")
 
 
 #define model
 if len(sys.argv) > 1:
     model = helper.loadThatModel(sys.argv[1])
     mh = helper.loadHelper(sys.argv[1])
+    print("model loaded")
     contextVecs = mh.get("contextVectors")
     recipes = mh.get("recipes")
 else:
+    print("creating model")
     charModel = Sequential()
     charModel.add(LSTM(128, return_sequences=True,input_shape=(maxlen, mh.numChars)))
     charModel.add(Dropout(.2))
