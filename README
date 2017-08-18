@@ -1,0 +1,6 @@
+README:
+
+#Installation
+
+1. Install keras
+2. Download Stanford CoreNLP and extract it. Place the stanford-corenlp-3.8.0-*.jar files in this repository's java/ folder
