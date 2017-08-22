@@ -10,13 +10,13 @@ import re
 import time
 import subprocess
 import numpy as np
-import gensim
+#import gensim
 import random
 
 import re
 
 NAMEREGEX = "name:\n(.+?)\n"
-
+DOCDELIM = "ENDDOC"
 # using these constants saves us from the overhead of storing in dictionaries
 WORD = 0
 POS = 1
@@ -47,31 +47,184 @@ class Recipe:
         self.directionsString = txt[dirInd+12:].strip()
 
 
+    def toParsable(self):
+        txt = "RECIPE_ID "+str(self.recipeID)+'\n'+DOCDELIM+'\n'
+        txt += self.name+'\n'+DOCDELIM+'\n'
+        txt += ('\n'+DOCDELIM+'\n').join(self.ingredientStrings)
+        txt += '\n'+DOCDELIM+'\nENDINGREDIENTS\n'+DOCDELIM+'\n'+self.directionsString
+        txt += '\n'+DOCDELIM+'\nENDRECIPE\n'+DOCDELIM+'\n'
+        return txt
+
+
+    def toTokenList(self):
+        tokens = [("name","NN","O"),(':',':','O'),('\n',':','MISC')]
+        for tup in self.parsedName:
+            tokens.append(tup)
+            tokens.append((' ',':','O'))
+            if tup[WORD]  in ('.','!','?','@',','):
+                t = tokens.pop(-3)
+        tokens[-1] = ('\n',':','MISC')
+        tokens.append(('\n',':','MISC'))
+        np.random.shuffle(self.parsedIngredients)
+        for line in self.parsedIngredients:
+            for tup in line:
+                tokens.append(tup)
+                tokens.append((' ',':','O'))
+                if tup[WORD]  in ('.','!','?','@',','):
+                    t = tokens.pop(-3)
+            tokens[-1] = ('\n',':','MISC')
+        tokens.append(('\n',':','MISC'))
+        tokens.append(("directions",'NN','O'))
+        tokens.append((':',':','O'))
+        for line in self.parsedDirections:
+            for tup in line:
+                tokens.append(tup)
+                tokens.append((' ',':','O'))
+                if tup[WORD]  in ('.','!','?','@',','):
+                    t = tokens.pop(-3)
+        tokens[-1] = ("$$$$",'CD','MISC')
+        return tokens
+        
+
 class Preprocessor:
     
     def __init__(self):
-        self.recipes = []
+        self.recipes = {}
 
 
-    def recipesFromFile(self, fname):
+    def recipesFromFile(self, fname="../data/allrecipes.txt"):
         """
         read in recipes from .txt, create Recipes from them
         """
         with open(fname, 'r') as f:
-            recipeStrings = f.read().split("$$$$")
+            recipeStrings = [i for i in f.read().split("$$$$") if i != '']
 
+        recipeInd = 0
         for recipeString in recipeStrings:
             recipe = Recipe(recipeString)
-            self.recipes.append(recipe)
+            recipe.recipeID = recipeInd
+            self.recipes[recipe.recipeID] = recipe
+            recipeInd += 1
+
+        self.docs = self.sendToStanfordParser()
+        self.readParsedDocs()
 
 
-    def sendToServer(message):
-        pass
+    def sendToStanfordParser(self):
+        docs = []
+        tempPath = "../data/"
+        for name, recipe in self.recipes.items():
+            docs.append(recipe.toParsable())
+        docs = parseDocsJar(docs,tempPath)
+        return docs
+        
 
+    def readParsedDocs(self):
+        location = "ID"
+        currentRecipe = None
+        for doc in self.docs:
+            if location == "ID":
+                recipeID = int(doc[0][1][WORD])
+                location = "name"
+                currentRecipe = self.recipes[recipeID]
+            elif location == "name":
+                currentRecipe.parsedName = doc[0]
+                currentRecipe.parsedIngredients = []
+                location = "ingredients"
+            elif location == "ingredients":
+                if doc[0][0][WORD] == "ENDINGREDIENTS":
+                    location = "directions"
+                else:
+                    reconstructedIngredient = []
+                    for sentence in doc:
+                        reconstructedIngredient.append(sentence)
+                    currentRecipe.parsedIngredients.append(reconstructedIngredient)
+            elif location == "directions":
+                if doc[0][0][WORD] == "ENDRECIPE":
+                    location = "ID"
+                else:
+                    currentRecipe.parsedDirections = doc
+
+
+    def buildDict(self, topn=2500):
+        self.vocab = {}
+        self.NERvocab = {}
+        self.POSvocab = {}
+        
+        for ID, recipe in self.recipes.items():
+            for wordTuple in recipe.parsedName:
+                self.addToDict(wordTuple)
+            for ingredientSet in recipe.parsedIngredients:
+                for wordTuple in ingredientSet:
+                    self.addToDict(wordTuple)
+            for sentence in recipe.parsedDirections:
+                for wordTuple in sentence:
+                    self.addToDict(wordTuple)
+        s = sorted(self.vocab.items(), key=lambda x: x[1], reverse=True)
+        p = sorted(self.POSvocab.items(), key=lambda x: x[1], reverse=True)
+        nv = sorted(self.NERvocab.items(), key=lambda x: x[1], reverse=True)
+        m = np.min([len(s),topn])
+        self.vocab = {s[n][0]: n+2 for n in range(0,m)}
+        self.vocabReverse = {v: k for k,v in self.vocab.items()}
+        self.NERvocab = {p[n][0]: n for n in range(0,len(p))}
+        self.NERreverse = {v: k for k,v in self.NERvocab.items()}
+        self.POSvocab = {nv[n][0]: n for n in range(0,len(nv))}
+        self.POSreverse = {v: k for k,v in self.POSvocab.items()}
+        
+        self.charDict = {}
+        self.charDictReverse = {}
+        lowercase = [chr(i) for i in range(97,123)]
+        punct = ['[',']',',',' ','?',':',';','+','-','.','!','*','(',')','@',
+                 '"',"'",'&','/']
+        chars = lowercase + punct + [str(i) for i in range(0,10)]
+        for c in chars:
+            l = len(self.charDict)
+            self.charDict[c] = l
+            self.charDictReverse[l] = c
+
+
+    def getWordVecs(self, fname="../data/glove.6B.100d.txt"):
+        """
+        Load up pretrained vectors for words in vocabulary (currently GloVe)
+        """
+        self.vectors = {}
+        with open (fname, 'r') as f:
+            for line in f:
+                s = line.split(' ')
+                word = s[0]
+                vector = np.array(s[1:])
+                if word in self.vocab:
+                    self.vectors[word] = vector
+        print(len(self.vectors)*1./len(self.vocab))
+        for word in self.vocab.keys():
+            if word not in self.vectors:
+                self.vectors[word] = np.array([np.random.rand()/50 for i in range(0,100)])
+
+
+    def addToDict(self,wordTuple):
+        word = wordTuple[WORD]
+        pos = wordTuple[POS]
+        ner = wordTuple[NER]
+        if word in self.vocab:
+            self.vocab[word] += 1
+        else:
+            self.vocab[word] = 1
+        if ner in self.NERvocab:
+            self.NERvocab[ner] += 1
+        else:
+            self.NERvocab[ner] = 1
+        if pos in self.POSvocab:
+            self.POSvocab[pos] += 1
+        else:
+            self.POSvocab[pos] = 1
+
+
+def defineModel():
+    pass
 
 
 def parseDocsJar(docs, tempPath, jarLoc = "../java/FlatFileParser.jar",
-                 docDelim="ENDDOC", gigsMem=2, njobs=8):
+                 docDelim="ENDDOC", gigsMem=1, njobs=8):
     """
     Function to parse documents into sentences, then sentences into tokens.
     The data will be dumped to disk (ASCII-encoded), then read in by the .jar
@@ -86,7 +239,7 @@ def parseDocsJar(docs, tempPath, jarLoc = "../java/FlatFileParser.jar",
 
     `tempPath`: str - path where the temp file should be dumped. Will be deleted
 
-    `jarLoc`: str - path to the .jar (should be in U0007)
+    `jarLoc`: str - path to the .jar 
 
     `docDelim`: str - document delimiter
 
@@ -110,18 +263,19 @@ def parseDocsJar(docs, tempPath, jarLoc = "../java/FlatFileParser.jar",
     # dump sentences to disk for Java process to consume
     for i in range(0, njobs):
         tempdocs = docs[ind:ind+docsPer]
-        name = "\\dump_"+str(random.randint(0,100000000))+".txt"
-        with open(tempPath+name,'w') as f:
-            for doc in tempdocs:
-                f.write(doc.encode('UTF-8').decode('ASCII','ignore'))
-                f.write("\n"+docDelim+"\n")
-
-        call = "java -jar -Xmx"+str(gigsMem)+"g "+'"'+jarLoc+'" "'+tempPath+name+'"'
-        print("starting process: " + call)
-        processes.add(subprocess.Popen(call,shell=True))
-
-        filenames.append(tempPath+name)
-        ind += docsPer
+        if len(tempdocs) > 0 :
+            name = "\\dump_"+str(random.randint(0,100000000))+".txt"
+            with open(tempPath+name,'w') as f:
+                for doc in tempdocs:
+                    f.write(doc.encode('UTF-8').decode('ASCII','ignore'))
+                    f.write("\n"+docDelim+"\n")
+    
+            call = "java -jar -Xmx"+str(gigsMem)+"g "+'"'+jarLoc+'" "'+tempPath+name+'"'
+            print("starting process: " + call)
+            processes.add(subprocess.Popen(call,shell=True))
+    
+            filenames.append(tempPath+name)
+            ind += docsPer
 
     while len(processes) > 0:
         time.sleep(.5)
@@ -160,8 +314,24 @@ def readInParsedFile(fn, docDelim):
             else:
                 token = []
                 (word,pos,ner) = line.split('\t')
+                if word == '-LRB-':
+                    word = '('
+                if word == '-RRB-':
+                    word = ')'
                 token.append(word)
                 token.append(pos)
                 token.append(ner)
                 tokens.append(token)
     return documents
+
+
+def splitDocs(docs, ratio=0.8):
+    numTrain = int(ratio*len(docs))
+    return docs[:numTrain], docs[numTrain:]
+
+
+def recipeToMatrices(recipe, prep, stride=20):
+    """
+    Function to generate matrices from a Preprocessor object full of recipes
+    """
+    
