@@ -12,8 +12,8 @@ import subprocess
 import numpy as np
 #import gensim
 import random
-
 import re
+from scipy import sparse
 
 NAMEREGEX = "name:\n(.+?)\n"
 DOCDELIM = "ENDDOC"
@@ -137,7 +137,8 @@ class Preprocessor:
                 else:
                     reconstructedIngredient = []
                     for sentence in doc:
-                        reconstructedIngredient.append(sentence)
+                        for word in sentence:
+                            reconstructedIngredient.append(word)
                     currentRecipe.parsedIngredients.append(reconstructedIngredient)
             elif location == "directions":
                 if doc[0][0][WORD] == "ENDRECIPE":
@@ -178,7 +179,7 @@ class Preprocessor:
                  '"',"'",'&','/']
         chars = lowercase + punct + [str(i) for i in range(0,10)]
         for c in chars:
-            l = len(self.charDict)
+            l = len(self.charDict)+1
             self.charDict[c] = l
             self.charDictReverse[l] = c
 
@@ -201,7 +202,7 @@ class Preprocessor:
                 self.vectors[word] = np.array([np.random.rand()/50 for i in range(0,100)])
 
 
-    def addToDict(self,wordTuple):
+    def addToDict(self, wordTuple):
         word = wordTuple[WORD]
         pos = wordTuple[POS]
         ner = wordTuple[NER]
@@ -219,12 +220,32 @@ class Preprocessor:
             self.POSvocab[pos] = 1
 
 
+    def toSparseMatrix(self, recipeInds):
+        """
+        create a sparse matrix out of the recipes based on an input list of 
+        indices/keys of which recipes
+        
+        used to generate matrices for LDA
+        """
+        mat = sparse.lil_matrix((len(recipeInds),len(self.vocab)))
+        for n, ind in enumerate(recipeInds):
+            rec = self.recipes[ind]
+            par = rec.toTokenList()
+            for tup in par:
+                word = tup[0]
+                try:
+                    mat[n, self.vocabReverse[word]] = 1
+                except KeyError:
+                    pass
+        return mat
+
+
 def defineModel():
     pass
 
 
 def parseDocsJar(docs, tempPath, jarLoc = "../java/FlatFileParser.jar",
-                 docDelim="ENDDOC", gigsMem=1, njobs=8):
+                 docDelim="ENDDOC", gigsMem=1, njobs=4):
     """
     Function to parse documents into sentences, then sentences into tokens.
     The data will be dumped to disk (ASCII-encoded), then read in by the .jar
