@@ -14,13 +14,22 @@ import numpy as np
 import random
 import re
 from scipy import sparse
+from keras.preprocessing.sequence import pad_sequences
+from keras.utils import to_categorical
+from keras.layers import Input, Embedding, Conv1D, Dense, MaxPooling1D
+from keras.layers import GlobalMaxPooling1D, Concatenate, BatchNormalization
+from keras.layers import Activation, Multiply
+from keras.models import Model
+import keras.optimizers as opt
 
 NAMEREGEX = "name:\n(.+?)\n"
 DOCDELIM = "ENDDOC"
 # using these constants saves us from the overhead of storing in dictionaries
 WORD = 0
-POS = 1
 NER = 2
+POS = 1
+
+
 
 
 class Recipe:
@@ -88,8 +97,10 @@ class Recipe:
 
 class Preprocessor:
     
-    def __init__(self):
+    def __init__(self, maxWord, maxNgram):
         self.recipes = {}
+        self.maxWord = maxWord
+        self.maxNgram = maxNgram
 
 
     def recipesFromFile(self, fname="../data/allrecipes.txt"):
@@ -97,7 +108,9 @@ class Preprocessor:
         read in recipes from .txt, create Recipes from them
         """
         with open(fname, 'r') as f:
-            recipeStrings = [i for i in f.read().split("$$$$") if i != '']
+            fullDoc = f.read()
+            recipeStrings = [i for i in fullDoc.split("$$$$") if i != '']
+            self.buildCharNgramDict(fullDoc)
 
         recipeInd = 0
         for recipeString in recipeStrings:
@@ -147,30 +160,48 @@ class Preprocessor:
                     currentRecipe.parsedDirections = doc
 
 
-    def buildDict(self, topn=2500):
+    def buildCharNgramDict(self, fullDoc, topn=50000):
+        """
+        builds a dictionary of ngrams of size 3 (may make this a range)
+        """
+        self.ngramVocab = {}
+        for ngramSize in range(3,4):
+            z = zip(*[fullDoc[i:] for i in range(0,ngramSize)])
+            for ng in z:
+                ngram = ''.join(ng)
+                try:
+                    self.ngramVocab[ngram] += 1
+                except KeyError:
+                    self.ngramVocab[ngram] = 1
+
+        s = sorted(self.ngramVocab.items(), key=lambda x: x[1], reverse=True)
+        m = np.min([len(s), topn])
+        self.ngramVocab = {s[n][0]: n+2 for n in range(0,m)}
+        self.ngramVocabReverse = {v: k for k,v in self.ngramVocab.items()}
+
+
+    def buildDict(self, topn=10000):
         self.vocab = {}
         self.NERvocab = {}
         self.POSvocab = {}
         
         for ID, recipe in self.recipes.items():
-            for wordTuple in recipe.parsedName:
-                self.addToDict(wordTuple)
-            for ingredientSet in recipe.parsedIngredients:
-                for wordTuple in ingredientSet:
-                    self.addToDict(wordTuple)
-            for sentence in recipe.parsedDirections:
-                for wordTuple in sentence:
-                    self.addToDict(wordTuple)
+            t = recipe.toTokenList()
+            for token in t:
+                self.addToDict(token)
+            
         s = sorted(self.vocab.items(), key=lambda x: x[1], reverse=True)
         p = sorted(self.POSvocab.items(), key=lambda x: x[1], reverse=True)
         nv = sorted(self.NERvocab.items(), key=lambda x: x[1], reverse=True)
-        m = np.min([len(s),topn])
+        m = np.min([len(s), topn])
         self.vocab = {s[n][0]: n+2 for n in range(0,m)}
+        self.vocab["OOV"] = 1
+        self.vocab["MASKED"] = 0
         self.vocabReverse = {v: k for k,v in self.vocab.items()}
-        self.NERvocab = {p[n][0]: n for n in range(0,len(p))}
-        self.NERreverse = {v: k for k,v in self.NERvocab.items()}
-        self.POSvocab = {nv[n][0]: n for n in range(0,len(nv))}
-        self.POSreverse = {v: k for k,v in self.POSvocab.items()}
+        self.POSvocab = {p[n][0]: n for n in range(0,len(p))}
+        self.POSreverse = {v: k for k,v in self.NERvocab.items()}
+        self.NERvocab = {nv[n][0]: n for n in range(0,len(nv))}
+        self.NERreverse = {v: k for k,v in self.POSvocab.items()}
         
         self.charDict = {}
         self.charDictReverse = {}
@@ -182,6 +213,8 @@ class Preprocessor:
             l = len(self.charDict)+1
             self.charDict[c] = l
             self.charDictReverse[l] = c
+        self.charDict[''] = 0
+        self.charDictReverse[0] = ''
 
 
     def getWordVecs(self, fname="../data/glove.6B.100d.txt"):
@@ -234,14 +267,100 @@ class Preprocessor:
             for tup in par:
                 word = tup[0]
                 try:
-                    mat[n, self.vocabReverse[word]] = 1
+                    mat[n, self.vocab[word]] += 1
                 except KeyError:
                     pass
         return mat
 
 
-def defineModel():
-    pass
+def recipeToExample(prep, ind, strideMax=10):
+    ldavec = prep.LDAvecs[ind]
+    r = prep.recipes[ind]
+    exampleNgrams = []
+    exampleWords = []
+    exampleOutChars = []
+    exampleOutPOS = []
+        
+    tokens = r.toTokenList()
+    wordLoc = 2
+    firstWord = getIndex(prep, tokens[0][WORD])
+    secondWord = getIndex(prep, tokens[1][WORD])
+    thirdWord = getIndex(prep, tokens[2][WORD])
+    runningString = tokens[0][WORD]+tokens[1][WORD]+tokens[2][WORD]
+    words = [firstWord, secondWord, thirdWord]
+    stride = np.random.randint(1, strideMax)
+#    print(tokens)
+#    print(words)
+#    print(stride)
+    while wordLoc < len(tokens):
+        word = tokens[wordLoc][WORD]
+#        print(wordLoc, word, stride)
+        if stride >= len(word):
+            wordLoc += 1
+            runningString += word
+            words.append(getIndex(prep, word))
+            stride -= len(word)
+        else:
+            ngrams = getNgrams(prep, runningString+word[:stride])
+            pastWords = pad_sequences([words], prep.maxWord)[0]
+            targetChar = getCharIndex(prep, word[stride])
+            target = to_categorical(targetChar, num_classes=len(prep.charDict))
+            pos = getPOS(prep, tokens[wordLoc][POS])
+            posTarget = to_categorical(pos, num_classes=len(prep.POSvocab))
+            exampleOutPOS.append(posTarget)
+            exampleOutChars.append(target)
+            exampleNgrams.append(ngrams)
+            exampleWords.append(pastWords)
+#            print("running: ", runningString)
+#            print("words: ",words)
+#            print("translated: ",[prep.vocabReverse[i] for i in words])
+#            print("ngrams: ", ngrams)
+#            print("target char:", word[stride])
+#            print("POS: ", posTarget, pos)
+            stride = np.random.randint(1, strideMax) + stride        
+
+    lda = np.multiply(np.ones((len(exampleOutPOS), ldavec.shape[0])), ldavec)
+    exampleNgrams = np.array(exampleNgrams)
+    exampleWords = np.array(exampleWords)
+    exampleOutPOS = np.array(exampleOutPOS).reshape((len(exampleOutPOS),len(prep.POSvocab)))
+    exampleOutChars = np.array(exampleOutChars).reshape((len(exampleOutChars),len(prep.charDict)))
+    
+    return exampleNgrams,exampleWords, lda, exampleOutChars, exampleOutPOS
+
+
+
+def getNgrams(prep, rs):
+    rs = rs[-(prep.maxNgram+3):]
+    rs = [''.join(x) for x in zip(*[rs[i:] for i in range(0,3)])]
+    out = []
+    for ngram in rs:
+        try:
+            out.append(prep.ngramVocab[ngram])
+        except KeyError:
+            out.append(1)
+    return pad_sequences([out], prep.maxNgram)[0]
+
+
+def getIndex(prep, token):
+    w = token
+    try:
+        return prep.vocab[w]
+    except KeyError:
+        return 1
+
+
+def getCharIndex(prep, char):
+    try:
+        return prep.charDict[char]
+    except KeyError:
+        return 0
+
+
+def getPOS(prep, pos):
+    try:
+        return prep.POSvocab[pos]
+    except KeyError:
+        return 0
 
 
 def parseDocsJar(docs, tempPath, jarLoc = "../java/FlatFileParser.jar",
@@ -351,8 +470,91 @@ def splitDocs(docs, ratio=0.8):
     return docs[:numTrain], docs[numTrain:]
 
 
-def recipeToMatrices(recipe, prep, stride=20):
+def recipesToMatrices(prep, inds, stride=15):
     """
     Function to generate matrices from a Preprocessor object full of recipes
     """
+    ngramList = []
+    wordList = []
+    vecsList = []
+    charList = []
+    posList = []
+    relevantLists = [ngramList, wordList, vecsList, charList, posList]
+    fullLength = 0
+    for n, ind in enumerate(inds):
+        result = recipeToExample(prep, ind, strideMax=stride)
+        for i in range(0,5):
+            for item in result[i]:
+                relevantLists[i].append(item)
+        fullLength += len(result[0])
+    print(fullLength)
+    ngramMat = np.zeros((fullLength, ngramList[0].shape[0]))
+    wordMat = np.zeros((fullLength, wordList[0].shape[0]))
+    vecMat = np.zeros((fullLength, vecsList[0].shape[0]))
+    charMat = np.zeros((fullLength, charList[0].shape[0]))
+    posMat = np.zeros((fullLength, posList[0].shape[0]))
     
+    relevantMatrices = [ngramMat, wordMat, vecMat, charMat, posMat]
+    for i in range(0, fullLength):
+        for j in range(0, 5):
+            relevantMatrices[j][i,:] = relevantLists[j][i]
+
+    return ngramMat, wordMat, vecMat, charMat, posMat
+
+
+def addBlock(inp, blockNum, dilation, woc):
+    bn = str(blockNum)
+    conva = Conv1D(32, 3, padding='causal',
+                   dilation_rate=dilation, name='conv_'+woc+'_'+bn+'a')(inp)
+    conva = BatchNormalization(axis=2, scale=False,
+                                name='batchnorm_'+woc+'_'+bn+'a')(conva)
+    convb = Conv1D(32, 3, padding='causal',
+                   dilation_rate=dilation, name='conv_'+woc+'_'+bn+'b')(inp)
+    convb = BatchNormalization(axis=2, scale=False,
+                                name='batchnorm_'+woc+'_'+bn+'b')(convb)
+    convb = Activation('sigmoid', name='gate_'+woc+'_'+bn+'b')(convb)
+    conv = Multiply(name='block_'+woc+'_'+bn)([conva, convb])
+    return conv    
+
+def defineModel(prep, numCharLayers=3, numWordLayers=3):
+    
+    maxNgram = prep.maxNgram 
+    maxWord = prep.maxWord
+    ngramVocabSize = len(prep.ngramVocab)
+    wordVocabSize = len(prep.vocab)
+    # character ngram input
+    inp1 = Input(shape=(maxNgram,), name='ngram_input')
+    cLayer = Embedding(ngramVocabSize, 12, name='ngram_embedding',
+                       input_length=maxNgram)(inp1)
+
+    inp2 = Input(shape=(maxWord,), name='word_input')
+    wLayer = Embedding(wordVocabSize, 100, name='word_embedding',
+                       input_length=maxWord)(inp2)
+    
+    for i in range(0, numCharLayers):
+        cLayer = addBlock(cLayer, i, 2**i, 'ngram')
+    ngram = GlobalMaxPooling1D()(cLayer)
+    
+    for i in range(0, numWordLayers):
+        wLayer = addBlock(wLayer, i, 2**i, 'word')
+    word = GlobalMaxPooling1D()(wLayer)
+        
+ 
+    inp3 = Input(shape=(prep.LDAsize,), name='LDA_vec_input')
+    gen = Dense(64, activation='sigmoid', name='gen_mask')(inp3)
+    
+    merged = Concatenate(name='concat_ngram_word')([ngram,word])
+    fc = Dense(64, name='fc', activation='relu')(merged)
+    fc = Multiply(name='multiply_fc_by_gen')([gen, fc])
+    
+    pos = Dense(len(prep.POSvocab), name='POS', activation='sigmoid')(fc)
+    
+    sf = Dense(len(prep.charDict), name='char_out', activation='sigmoid')(fc)
+    
+    
+    model = Model([inp1, inp2, inp3], [sf, pos])
+    rms = opt.RMSprop()
+    model.compile(loss='categorical_crossentropy', optimizer=rms,
+                  loss_weights=[1., 0.5])
+    
+    return model
